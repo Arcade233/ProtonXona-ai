@@ -1,0 +1,8 @@
+gradio
+diffusers
+torch
+moviepy
+edge-tts
+transformers
+accelerate
+Pillow

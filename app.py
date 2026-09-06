@@ -1,76 +1,62 @@
-import os
-import tempfile
-import gradio as gr
+import os, tempfile, requests, gradio as gr
 from gtts import gTTS
 import PIL.Image
-# Fix for Pillow 10
 if not hasattr(PIL.Image, 'ANTIALIAS'):
     PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
-
 from moviepy.editor import VideoFileClip, AudioFileClip
-from huggingface_hub import InferenceClient
 
-HF_TOKEN = os.getenv("HF_TOKEN")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
 
-if not HF_TOKEN:
-    print("WARNING: HF_TOKEN not set!")
+def generate(prompt, script):
+    if not HF_TOKEN:
+        return None, "Add HF_TOKEN in Render > Environment > Add Variable"
+    if not prompt:
+        return None, "Enter prompt"
+    if not script:
+        script = prompt
 
-client = InferenceClient(token=HF_TOKEN)
-
-def generate_real_video(prompt, voice_script):
     try:
-        if not HF_TOKEN:
-            return None, "FAIL: You must add HF_TOKEN in Render -> Environment Variables. Get free at https://huggingface.co/settings/tokens"
+        # 1. Real video via new HF Router
+        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+        url = "https://router.huggingface.co/hf-inference/models/damo-vilab/modelscope-text-to-video-synthesis"
         
-        if not prompt or len(prompt.strip()) < 5:
-            return None, "Enter video prompt"
+        r = requests.post(url, headers=headers, json={"inputs": prompt}, timeout=180)
         
-        if not voice_script or len(voice_script.strip()) < 3:
-            voice_script = prompt
+        if r.status_code != 200:
+            return None, f"HF Error {r.status_code}: {r.text[:800]}"
 
-        # 1. REAL AI VIDEO - actual motion
-        # Model: Wan 1.3B - real text to video
-        video_path = client.text_to_video(
-            prompt=prompt,
-            model="Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
-        )
-        # video_path is a temp mp4 file from HF
+        raw_video = tempfile.mktemp(suffix=".mp4")
+        with open(raw_video, "wb") as f:
+            f.write(r.content)
 
-        # 2. REAL VOICE from script
+        # 2. Voice
         tmp_audio = tempfile.mktemp(suffix=".mp3")
-        gTTS(text=voice_script, lang='en', slow=False).save(tmp_audio)
-        audio_clip = AudioFileClip(tmp_audio)
+        gTTS(text=script, lang='en').save(tmp_audio)
+        audio = AudioFileClip(tmp_audio)
 
-        # 3. Merge video + voice
-        video_clip = VideoFileClip(video_path)
-        
-        # Loop or cut to match voice length
-        if video_clip.duration < audio_clip.duration:
-            video_clip = video_clip.loop(duration=audio_clip.duration)
+        # 3. Merge
+        video = VideoFileClip(raw_video)
+        if video.duration < audio.duration:
+            video = video.loop(duration=audio.duration)
         else:
-            video_clip = video_clip.subclip(0, audio_clip.duration)
-
-        final_clip = video_clip.set_audio(audio_clip)
-        tmp_final = tempfile.mktemp(suffix=".mp4")
-        final_clip.write_videofile(tmp_final, fps=16, codec='libx264', audio_codec='aac', logger=None)
-
-        return tmp_final, f"SUCCESS: Real video generated for '{prompt}'"
+            video = video.subclip(0, audio.duration)
+        
+        final = video.set_audio(audio)
+        out = tempfile.mktemp(suffix=".mp4")
+        final.write_videofile(out, fps=8, codec='libx264', audio_codec='aac', logger=None)
+        
+        return out, "REAL VIDEO SUCCESS"
 
     except Exception as e:
-        return None, f"ERROR: {str(e)}"
+        return None, f"ERROR: {str(e)[:1200]}"
 
-with gr.Blocks(title="ProtonXona Real Video") as demo:
-    gr.Markdown("# ProtonXona - Real AI Text to Video + Voice")
-    gr.Markdown("This generates REAL moving video, not image.")
-    
-    with gr.Row():
-        prompt = gr.Textbox(label="Video Action (what moves)", lines=3, placeholder="Ghanaian woman walking in Accra market, cinematic tracking shot", value="Ghanaian woman walking in Accra market, cinematic tracking shot, 4k")
-        voice = gr.Textbox(label="Voiceover Script (what she says)", lines=3, placeholder="Welcome to ProtonXona", value="Welcome to ProtonXona, where stories come alive")
-    
-    btn = gr.Button("GENERATE REAL VIDEO", variant="primary")
-    out_video = gr.Video(label="Real AI Video Result")
-    out_status = gr.Textbox(label="Status")
-    
-    btn.click(fn=generate_real_video, inputs=[prompt, voice], outputs=[out_video, out_status])
+with gr.Blocks() as demo:
+    gr.Markdown("# ProtonXona REAL VIDEO")
+    p = gr.Textbox(label="Action prompt", value="Ghanaian woman walking in market, cinematic")
+    s = gr.Textbox(label="Voice script", value="Welcome to ProtonXona")
+    b = gr.Button("Generate REAL Video", variant="primary")
+    v = gr.Video()
+    t = gr.Textbox(label="Status")
+    b.click(generate, inputs=[p, s], outputs=[v, t])
 
 demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 10000)))

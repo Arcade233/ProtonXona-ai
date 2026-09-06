@@ -1,7 +1,6 @@
-gradio
+gradio==4.44.0
 gtts
 Pillow==9.5.0
 moviepy==1.0.3
 imageio-ffmpeg
-huggingface_hub
-requests
+huggingface_hub>=0.26.0

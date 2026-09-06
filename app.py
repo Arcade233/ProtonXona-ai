@@ -1,4 +1,4 @@
-import os, tempfile, requests, gradio as gr
+import os, tempfile, requests, gradio as gr, time
 from gtts import gTTS
 import PIL.Image
 if not hasattr(PIL.Image, 'ANTIALIAS'):
@@ -9,32 +9,50 @@ HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 def generate(prompt, script):
     if not HF_TOKEN:
-        return None, "Add HF_TOKEN in Render > Environment > Add Variable"
+        return None, "Add HF_TOKEN in Render"
     if not prompt:
         return None, "Enter prompt"
     if not script:
         script = prompt
 
     try:
-        # 1. Real video via new HF Router
-        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-        url = "https://router.huggingface.co/hf-inference/models/damo-vilab/modelscope-text-to-video-synthesis"
+        headers = {"Authorization": f"Bearer {HF_TOKEN}", "Content-Type": "application/json"}
         
-        r = requests.post(url, headers=headers, json={"inputs": prompt}, timeout=180)
+        # REAL VIDEO MODEL - Supported provider fal-ai
+        # Try 1: Wan 1.3B via fal-ai (WORKS)
+        urls_to_try = [
+            "https://router.huggingface.co/fal-ai/Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+            "https://router.huggingface.co/replicate/Wan-AI/Wan2.1-T2V-14B-Diffusers"
+        ]
         
-        if r.status_code != 200:
-            return None, f"HF Error {r.status_code}: {r.text[:800]}"
+        r = None
+        last_error = ""
+        for url in urls_to_try:
+            try:
+                print(f"Trying {url}")
+                r = requests.post(url, headers=headers, json={"inputs": prompt, "parameters": {"num_frames": 33}}, timeout=180)
+                if r.status_code == 200:
+                    break
+                else:
+                    last_error = f"{r.status_code}: {r.text[:500]}"
+                    print(last_error)
+            except Exception as e2:
+                last_error = str(e2)
+                continue
+
+        if r is None or r.status_code != 200:
+            return None, f"All video models busy. Last: {last_error}. Try again in 1 min. This happens because free HF is queued."
 
         raw_video = tempfile.mktemp(suffix=".mp4")
         with open(raw_video, "wb") as f:
             f.write(r.content)
 
-        # 2. Voice
+        # Voice
         tmp_audio = tempfile.mktemp(suffix=".mp3")
         gTTS(text=script, lang='en').save(tmp_audio)
         audio = AudioFileClip(tmp_audio)
 
-        # 3. Merge
+        # Merge
         video = VideoFileClip(raw_video)
         if video.duration < audio.duration:
             video = video.loop(duration=audio.duration)
@@ -45,18 +63,18 @@ def generate(prompt, script):
         out = tempfile.mktemp(suffix=".mp4")
         final.write_videofile(out, fps=8, codec='libx264', audio_codec='aac', logger=None)
         
-        return out, "REAL VIDEO SUCCESS"
+        return out, f"REAL VIDEO SUCCESS - {prompt}"
 
     except Exception as e:
-        return None, f"ERROR: {str(e)[:1200]}"
+        return None, f"ERROR: {str(e)[:1500]}"
 
 with gr.Blocks() as demo:
-    gr.Markdown("# ProtonXona REAL VIDEO")
-    p = gr.Textbox(label="Action prompt", value="Ghanaian woman walking in market, cinematic")
+    gr.Markdown("# ProtonXona REAL VIDEO - Wan Model")
+    p = gr.Textbox(label="What should happen? (real motion)", value="African woman walking in busy market, camera follows, cinematic")
     s = gr.Textbox(label="Voice script", value="Welcome to ProtonXona")
-    b = gr.Button("Generate REAL Video", variant="primary")
-    v = gr.Video()
-    t = gr.Textbox(label="Status")
+    b = gr.Button("Generate REAL Moving Video", variant="primary")
+    v = gr.Video(label="Real Motion Video")
+    t = gr.Textbox(label="Status - if busy wait 1 min and retry")
     b.click(generate, inputs=[p, s], outputs=[v, t])
 
 demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 10000)))

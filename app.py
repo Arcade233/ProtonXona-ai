@@ -1,66 +1,66 @@
 import gradio as gr
-import os
-import tempfile
+import os, tempfile, requests
 from gtts import gTTS
-from PIL import Image, ImageDraw, ImageFont
 import PIL.Image
-# FIX for Pillow 10+ error
 if not hasattr(PIL.Image, 'ANTIALIAS'):
     PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
-from moviepy.editor import ImageClip, AudioFileClip
-import textwrap
+from moviepy.editor import VideoFileClip, AudioFileClip
 
-def create_video(script):
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+
+def create_action_video(prompt, script):
     try:
-        if not script or len(script) < 5:
-            return None, "Type longer script"
+        if not prompt or len(prompt) < 5:
+            return None, "Type prompt for video action"
+        if not script:
+            script = prompt
+
+        headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
         
-        # 1. Make audio from script
+        # 1. Generate REAL AI video with action using HF video model
+        # Using ModelScope Text-to-Video - works and fast
+        API_URL = "https://api-inference.huggingface.co/models/damo-vilab/modelscope-text-to-video-synthesis"
+        
+        response = requests.post(API_URL, headers=headers, json={"inputs": prompt}, timeout=120)
+        
+        if response.status_code != 200:
+            return None, f"Video Model Error {response.status_code}: {response.text[:800]}. Make sure HF_TOKEN is set in Render Environment!"
+
+        tmp_video_raw = tempfile.mktemp(suffix=".mp4")
+        with open(tmp_video_raw, "wb") as f:
+            f.write(response.content)
+
+        # 2. Generate voice audio from script
         tmp_audio = tempfile.mktemp(suffix=".mp3")
         tts = gTTS(text=script, lang='en', slow=False)
         tts.save(tmp_audio)
         
+        # 3. Merge AI action video + AI voice
+        video_clip = VideoFileClip(tmp_video_raw)
         audio_clip = AudioFileClip(tmp_audio)
-        duration = audio_clip.duration
         
-        # 2. Make image with text (720x1280)
-        W, H = 720, 1280
-        img = Image.new('RGB', (W, H), color=(15, 15, 25))
-        draw = ImageDraw.Draw(img)
-        
-        # Wrap text to fit screen
-        wrapped = textwrap.fill(script, width=30)
-        try:
-            font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
-        except:
-            font = ImageFont.load_default()
+        # Make video length = audio length (loop video if needed)
+        if video_clip.duration < audio_clip.duration:
+            video_clip = video_clip.loop(duration=audio_clip.duration)
+        else:
+            video_clip = video_clip.subclip(0, audio_clip.duration)
             
-        # Center text
-        draw.multiline_text((40, 450), wrapped, fill=(255,255,255), font=font, spacing=12, align="left")
-        draw.text((40, 100), "PROTONXONA", fill=(0, 255, 200), font=font)
+        final_video = video_clip.set_audio(audio_clip)
+        tmp_final = tempfile.mktemp(suffix=".mp4")
+        final_video.write_videofile(tmp_final, fps=8, codec='libx264', audio_codec='aac', logger=None)
         
-        tmp_img = tempfile.mktemp(suffix=".png")
-        img.save(tmp_img)
-        
-        # 3. Combine image + audio to video
-        image_clip = ImageClip(tmp_img, duration=duration)
-        image_clip = image_clip.set_audio(audio_clip)
-        
-        tmp_video = tempfile.mktemp(suffix=".mp4")
-        image_clip.write_videofile(tmp_video, fps=24, codec='libx264', audio_codec='aac', logger=None)
-        
-        return tmp_video, f"SUCCESS! Video duration: {duration:.1f}s"
-        
+        return tmp_final, f"SUCCESS! Action prompt: {prompt}"
+
     except Exception as e:
-        return None, f"ERROR: {str(e)[:1200]}"
+        return None, f"ERROR: {str(e)[:1500]}"
 
 with gr.Blocks() as demo:
-    gr.Markdown("# ProtonXona - Script to VIDEO + AUDIO")
-    gr.Markdown("Type your script below and get video with voice")
-    script_box = gr.Textbox(label="Enter Your Script", lines=6, value="Welcome to ProtonXona. Today we will create amazing videos from text with AI voice.")
-    btn = gr.Button("Generate Video with Audio", variant="primary")
-    out_video = gr.Video(label="Your Video Result")
+    gr.Markdown("# ProtonXona - REAL AI ACTION VIDEO + AUDIO")
+    prompt_box = gr.Textbox(label="Video Action Prompt (what should happen)", value="Ghanaian woman walking in Accra market, cinematic, 4k, moving camera")
+    script_box = gr.Textbox(label="Voiceover Script (what she says)", lines=3, value="Welcome to Ghana, where beauty meets culture. This is ProtonXona.")
+    btn = gr.Button("Generate ACTION Video", variant="primary")
+    out_video = gr.Video(label="Action Video Result")
     out_status = gr.Textbox(label="Status")
-    btn.click(create_video, inputs=script_box, outputs=[out_video, out_status])
+    btn.click(create_action_video, inputs=[prompt_box, script_box], outputs=[out_video, out_status])
 
 demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 10000)))

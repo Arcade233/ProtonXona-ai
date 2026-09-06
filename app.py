@@ -3,69 +3,70 @@ from gtts import gTTS
 import PIL.Image
 if not hasattr(PIL.Image, 'ANTIALIAS'):
     PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
-from moviepy.editor import VideoFileClip, AudioFileClip
-import fal_client
+from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+from huggingface_hub import InferenceClient
 
-FAL_KEY = os.getenv("FAL_KEY", "")
-if FAL_KEY:
-    os.environ["FAL_KEY"] = FAL_KEY
+HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 def generate(prompt, script):
-    if not FAL_KEY:
-        return None, "Add FAL_KEY in Render Environment Variables - get free at fal.ai/dashboard/keys"
+    if not HF_TOKEN:
+        return None, "Add HF_TOKEN in Render > Environment"
     if not prompt:
         return None, "Enter prompt"
     if not script:
         script = prompt
 
     try:
-        # 1. REAL AI VIDEO from fal.ai - Wan 2.1 - TRUE MOTION
-        result = fal_client.subscribe(
-            "fal-ai/wan/v2.1/1.3b/text-to-video",
-            arguments={
-                "prompt": prompt,
-                "negative_prompt": "blurry, low quality, distorted",
-                "num_frames": 81,
-                "frames_per_second": 16,
-                "aspect_ratio": "9:16"
-            }
-        )
-        
-        video_url = result["video"]["url"]
-        
-        # Download real video
-        import requests
-        raw_video = tempfile.mktemp(suffix=".mp4")
-        with open(raw_video, "wb") as f:
-            f.write(requests.get(video_url).content)
-
-        # 2. Voice
+        client = InferenceClient(token=HF_TOKEN)
+        # VOICE
         tmp_audio = tempfile.mktemp(suffix=".mp3")
         gTTS(text=script, lang='en').save(tmp_audio)
         audio = AudioFileClip(tmp_audio)
+        
+        # 5 STORY SHOTS FOR MOTION
+        shots = [
+            f"{prompt}, wide establishing shot, cinematic",
+            f"{prompt}, medium shot walking forward, action, motion blur",
+            f"{prompt}, close up face, emotional, detailed",
+            f"{prompt}, side tracking shot moving, dynamic",
+            f"{prompt}, final heroic pose, sunset lighting"
+        ]
+        
+        clips = []
+        clip_dur = audio.duration / len(shots)
+        
+        for i, shot in enumerate(shots):
+            img = client.text_to_image(shot, model="black-forest-labs/FLUX.1-schnell")
+            tmp_img = tempfile.mktemp(suffix=f"_{i}.jpg")
+            img = img.resize((720, 1280))
+            img.save(tmp_img)
+            
+            # REAL MOTION: Zoom + slight pan
+            clip = ImageClip(tmp_img, duration=clip_dur)
+            # Ken burns effect
+            clip = clip.resize(lambda t: 1 + 0.15*t)  # zoom in
+            if i % 2 == 0:
+                clip = clip.set_position(lambda t: ('center', 50 - t*20)) # pan up
+            else:
+                clip = clip.set_position(lambda t: ( -t*20, 'center')) # pan left
+            clips.append(clip)
 
-        # 3. Merge
-        video_clip = VideoFileClip(raw_video)
-        if video_clip.duration < audio.duration:
-            video_clip = video_clip.loop(duration=audio.duration)
-        else:
-            video_clip = video_clip.subclip(0, audio.duration)
-
-        final = video_clip.set_audio(audio)
+        video = concatenate_videoclips(clips, method="compose")
+        final = video.set_audio(audio)
         out = tempfile.mktemp(suffix=".mp4")
-        final.write_videofile(out, fps=16, codec='libx264', audio_codec='aac', logger=None)
+        final.write_videofile(out, fps=24, codec='libx264', audio_codec='aac', logger=None)
 
-        return out, f"REAL FAL VIDEO SUCCESS - True motion video!"
+        return out, "DONE - 100% FREE Motion Video (5 AI scenes + voice + motion)"
 
     except Exception as e:
-        return None, f"FAL ERROR: {str(e)[:1500]}"
+        return None, f"ERROR: {str(e)[:1500]}"
 
-with gr.Blocks() as demo:
-    gr.Markdown("# ProtonXona - REAL AI VIDEO with Fal.ai (No Queue)")
-    p = gr.Textbox(label="Video prompt - what moves", value="Ghanaian woman walking through vibrant Accra market, cinematic tracking shot, 4k, natural motion", lines=3)
-    s = gr.Textbox(label="Voice script", value="Welcome to ProtonXona, where your ideas become real videos", lines=2)
-    b = gr.Button("Generate REAL Moving Video (Fal.ai)", variant="primary")
-    v = gr.Video(label="True Motion Video")
+with gr.Blocks(theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# ProtonXona - FREE AI Video (No Balance Needed)")
+    p = gr.Textbox(label="What should happen (action)", value="Ghanaian young entrepreneur walking confidently through modern Accra market, cinematic", lines=2)
+    s = gr.Textbox(label="Voice script", value="Welcome to ProtonXona. We turn your ideas into powerful videos in seconds.", lines=2)
+    b = gr.Button("Generate FREE Video Now", variant="primary")
+    v = gr.Video(label="Your Video")
     t = gr.Textbox(label="Status")
     b.click(generate, inputs=[p, s], outputs=[v, t])
 

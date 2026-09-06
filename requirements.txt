@@ -1,7 +1,3 @@
 gradio
-diffusers
-torch
-transformers
-accelerate
-moviepy
+requests
 Pillow

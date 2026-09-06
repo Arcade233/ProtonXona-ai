@@ -1,63 +1,69 @@
 import gradio as gr
-import os, tempfile, requests
+import os, tempfile
 from gtts import gTTS
 import PIL.Image
 if not hasattr(PIL.Image, 'ANTIALIAS'):
     PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
-from moviepy.editor import VideoFileClip, AudioFileClip
+from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+from huggingface_hub import InferenceClient
+import textwrap
 
 HF_TOKEN = os.getenv("HF_TOKEN", "")
+client = InferenceClient(token=HF_TOKEN) if HF_TOKEN else InferenceClient()
 
 def create_action_video(prompt, script):
     try:
         if not prompt or len(prompt) < 5:
-            return None, "Type prompt for video action"
+            return None, "Type action prompt"
         if not script:
             script = prompt
 
-        headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
-        
-        # 1. Generate REAL AI video with action using HF video model
-        # Using ModelScope Text-to-Video - works and fast
-        API_URL = "https://api-inference.huggingface.co/models/damo-vilab/modelscope-text-to-video-synthesis"
-        
-        response = requests.post(API_URL, headers=headers, json={"inputs": prompt}, timeout=120)
-        
-        if response.status_code != 200:
-            return None, f"Video Model Error {response.status_code}: {response.text[:800]}. Make sure HF_TOKEN is set in Render Environment!"
-
-        tmp_video_raw = tempfile.mktemp(suffix=".mp4")
-        with open(tmp_video_raw, "wb") as f:
-            f.write(response.content)
-
-        # 2. Generate voice audio from script
+        # 1. Audio
         tmp_audio = tempfile.mktemp(suffix=".mp3")
-        tts = gTTS(text=script, lang='en', slow=False)
-        tts.save(tmp_audio)
-        
-        # 3. Merge AI action video + AI voice
-        video_clip = VideoFileClip(tmp_video_raw)
+        gTTS(text=script, lang='en').save(tmp_audio)
         audio_clip = AudioFileClip(tmp_audio)
+        audio_duration = audio_clip.duration
+
+        # 2. Generate 3 ACTION images for video (to create motion)
+        images = []
+        for i in range(3):
+            # Slight variation to create action
+            p = f"{prompt}, frame {i+1}, cinematic action shot, dynamic movement"
+            try:
+                img = client.text_to_image(p, model="black-forest-labs/FLUX.1-schnell")
+                tmp_img = tempfile.mktemp(suffix=".png")
+                img.save(tmp_img)
+                images.append(tmp_img)
+            except Exception as e_img:
+                return None, f"Image Gen Error (check HF_TOKEN): {str(e_img)[:800]}"
+
+        # 3. Make ACTION video with zoom/pan effect
+        clips = []
+        clip_duration = audio_duration / 3
+        for img_path in images:
+            clip = ImageClip(img_path, duration=clip_duration)
+            # Zoom in effect for action feel
+            w, h = 720, 1280
+            clip = clip.resize((w, h))
+            # slight zoom
+            clip = clip.resize(lambda t: 1 + 0.1*t)
+            clips.append(clip)
+
+        video = concatenate_videoclips(clips, method="compose")
+        video = video.set_audio(audio_clip)
         
-        # Make video length = audio length (loop video if needed)
-        if video_clip.duration < audio_clip.duration:
-            video_clip = video_clip.loop(duration=audio_clip.duration)
-        else:
-            video_clip = video_clip.subclip(0, audio_clip.duration)
-            
-        final_video = video_clip.set_audio(audio_clip)
         tmp_final = tempfile.mktemp(suffix=".mp4")
-        final_video.write_videofile(tmp_final, fps=8, codec='libx264', audio_codec='aac', logger=None)
-        
-        return tmp_final, f"SUCCESS! Action prompt: {prompt}"
+        video.write_videofile(tmp_final, fps=24, codec='libx264', audio_codec='aac', logger=None)
+
+        return tmp_final, f"SUCCESS! Created action video from: {prompt}"
 
     except Exception as e:
         return None, f"ERROR: {str(e)[:1500]}"
 
 with gr.Blocks() as demo:
-    gr.Markdown("# ProtonXona - REAL AI ACTION VIDEO + AUDIO")
-    prompt_box = gr.Textbox(label="Video Action Prompt (what should happen)", value="Ghanaian woman walking in Accra market, cinematic, 4k, moving camera")
-    script_box = gr.Textbox(label="Voiceover Script (what she says)", lines=3, value="Welcome to Ghana, where beauty meets culture. This is ProtonXona.")
+    gr.Markdown("# ProtonXona - REAL ACTION VIDEO")
+    prompt_box = gr.Textbox(label="Video Action Prompt", value="Ghanaian woman walking in Accra market, cinematic tracking shot, 4k")
+    script_box = gr.Textbox(label="Voiceover Script", value="Welcome to Ghana, where culture and beauty come alive. This is ProtonXona.")
     btn = gr.Button("Generate ACTION Video", variant="primary")
     out_video = gr.Video(label="Action Video Result")
     out_status = gr.Textbox(label="Status")

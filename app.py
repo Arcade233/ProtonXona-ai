@@ -62,7 +62,7 @@ def make_video_file(prompt: str, script_text: str) -> str:
         logger=None,
     )
     
-    # Close clips to release file locks
+    # Close clips to release file handles
     clip.close()
     audio.close()
 

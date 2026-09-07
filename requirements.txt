@@ -1,7 +1,6 @@
-gradio
-python-telegram-bot==20.7
-gtts
-Pillow==9.5.0
-moviepy==1.0.3
-imageio-ffmpeg
-huggingface_hub
+gradio>=4.0.0
+gTTS>=2.5.0
+moviepy>=1.0.3
+huggingface-hub>=0.20.0
+python-telegram-bot>=20.0
+pillow>=10.0.0

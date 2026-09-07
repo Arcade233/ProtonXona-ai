@@ -1,6 +1,7 @@
 import os
 import tempfile
 import threading
+import time
 import gradio as gr
 from gtts import gTTS
 from huggingface_hub import InferenceClient
@@ -13,7 +14,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# Robust MoviePy import compatibility (handles both MoviePy v1 and v2)
+# Robust MoviePy import compatibility
 try:
     from moviepy.editor import ImageClip, AudioFileClip
 except ModuleNotFoundError:
@@ -23,7 +24,8 @@ except ModuleNotFoundError:
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 TELE_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
-client = InferenceClient(token=HF_TOKEN) if HF_TOKEN else None
+# Pass explicit provider for enhanced stability
+client = InferenceClient(provider="hf-inference", api_key=HF_TOKEN) if HF_TOKEN else None
 
 # ---------------- CORE VIDEO GENERATION ----------------
 def make_video_file(prompt: str, script_text: str) -> str:
@@ -39,9 +41,18 @@ def make_video_file(prompt: str, script_text: str) -> str:
     tts.save(tmp_audio)
     audio = AudioFileClip(tmp_audio)
 
-    # 2. Generate Image via Hugging Face Inference API
+    # 2. Generate Image via Hugging Face Inference API with Retry Logic
     full_prompt = f"{prompt}, cinematic, 4k high quality"
-    img = client.text_to_image(full_prompt, model="black-forest-labs/FLUX.1-schnell")
+    img = None
+    
+    for attempt in range(3):
+        try:
+            img = client.text_to_image(full_prompt, model="black-forest-labs/FLUX.1-schnell")
+            break
+        except Exception as err:
+            if attempt == 2:
+                raise err
+            time.sleep(2)  # Wait 2 seconds before retrying network request
     
     # Resize Image (PIL format)
     img = img.resize((512, 912))
@@ -51,13 +62,11 @@ def make_video_file(prompt: str, script_text: str) -> str:
     # 3. Create Video Clip from Image + Audio
     clip = ImageClip(tmp_img)
     
-    # Duration setting compatibility (MoviePy v1 vs v2)
     if hasattr(clip, "with_duration"):
         clip = clip.with_duration(audio.duration)
     else:
         clip = clip.set_duration(audio.duration)
 
-    # Audio attachment compatibility (MoviePy v1 vs v2)
     if hasattr(clip, "with_audio"):
         clip = clip.with_audio(audio)
     else:
@@ -73,7 +82,6 @@ def make_video_file(prompt: str, script_text: str) -> str:
         logger=None,
     )
     
-    # Clean up file handlers
     clip.close()
     audio.close()
 
@@ -168,9 +176,6 @@ def launch_telegram():
 
 # ---------------- MAIN EXECUTION ----------------
 if __name__ == "__main__":
-    # Launch Gradio interface in a background daemon thread
     gradio_thread = threading.Thread(target=launch_gradio, daemon=True)
     gradio_thread.start()
-
-    # Launch Telegram Bot on the main thread
     launch_telegram()

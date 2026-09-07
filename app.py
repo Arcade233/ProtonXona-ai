@@ -24,8 +24,8 @@ except ModuleNotFoundError:
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 TELE_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
-# Pass explicit provider for enhanced stability
-client = InferenceClient(provider="hf-inference", api_key=HF_TOKEN) if HF_TOKEN else None
+# Standard InferenceClient initialization
+client = InferenceClient(token=HF_TOKEN) if HF_TOKEN else None
 
 # ---------------- CORE VIDEO GENERATION ----------------
 def make_video_file(prompt: str, script_text: str) -> str:
@@ -52,7 +52,7 @@ def make_video_file(prompt: str, script_text: str) -> str:
         except Exception as err:
             if attempt == 2:
                 raise err
-            time.sleep(2)  # Wait 2 seconds before retrying network request
+            time.sleep(2)  # Wait 2 seconds before retrying
     
     # Resize Image (PIL format)
     img = img.resize((512, 912))

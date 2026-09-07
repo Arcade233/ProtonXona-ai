@@ -1,37 +1,77 @@
-import os, tempfile, threading
+import os
+import tempfile
+import threading
 import gradio as gr
 from gtts import gTTS
 from moviepy.editor import ImageClip, AudioFileClip
 from huggingface_hub import InferenceClient
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 
+# ---------------- ENVIRONMENT & TOKENS ----------------
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 TELE_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
 client = InferenceClient(token=HF_TOKEN) if HF_TOKEN else None
 
-def make_video_file(prompt, script_text):
-    # shared core function for both website and telegram
+# ---------------- CORE VIDEO GENERATION ----------------
+def make_video_file(prompt: str, script_text: str) -> str:
+    """Shared core function for generating video from prompt and voice script."""
+    if not client:
+        raise ValueError("HF_TOKEN is missing. Please set it in your environment variables.")
+
     short_script = script_text[:120] if script_text else prompt[:120]
-    
+
+    # 1. Generate Voiceover Audio (gTTS)
     tmp_audio = tempfile.mktemp(suffix=".mp3")
-    gTTS(text=short_script, lang='en').save(tmp_audio)
+    tts = gTTS(text=short_script, lang="en")
+    tts.save(tmp_audio)
     audio = AudioFileClip(tmp_audio)
 
-    img = client.text_to_image(prompt + ", cinematic, 4k", model="black-forest-labs/FLUX.1-schnell")
+    # 2. Generate Image via Hugging Face Inference API
+    full_prompt = f"{prompt}, cinematic, 4k high quality"
+    img = client.text_to_image(full_prompt, model="black-forest-labs/FLUX.1-schnell")
+    
+    # Resize Image (PIL format)
+    img = img.resize((512, 912))
     tmp_img = tempfile.mktemp(suffix=".jpg")
-    img.resize((512, 912)).save(tmp_img)
+    img.save(tmp_img)
 
-    clip = ImageClip(tmp_img, duration=audio.duration).set_audio(audio)
-    out = tempfile.mktemp(suffix=".mp4")
-    clip.write_videofile(out, fps=20, codec='libx264', preset='ultrafast', audio_codec='aac', logger=None)
-    return out
+    # 3. Create Video Clip from Image + Audio
+    clip = ImageClip(tmp_img).set_duration(audio.duration)
+    
+    # Compatibility support for MoviePy v1 and v2
+    if hasattr(clip, "set_audio"):
+        clip = clip.set_audio(audio)
+    else:
+        clip = clip.with_audio(audio)
 
-# ---------- WEBSITE PART ----------
-def generate_web(prompt, script):
-    if not client:
-        return None, "Add HF_TOKEN in Render"
+    out_video = tempfile.mktemp(suffix=".mp4")
+    clip.write_videofile(
+        out_video,
+        fps=20,
+        codec="libx264",
+        preset="ultrafast",
+        audio_codec="aac",
+        logger=None,
+    )
+    
+    # Close clips to release file locks
+    clip.close()
+    audio.close()
+
+    return out_video
+
+# ---------------- GRADIO WEBSITE INTERFACE ----------------
+def generate_web(prompt: str, script: str):
+    if not HF_TOKEN:
+        return None, "Error: HF_TOKEN environment variable is missing!"
     try:
         out = make_video_file(prompt, script)
         return out, "DONE ✅"
@@ -40,45 +80,83 @@ def generate_web(prompt, script):
 
 def launch_gradio():
     with gr.Blocks(theme=gr.themes.Soft()) as demo:
-        gr.Markdown("# ProtonXona — Script to Video + Audio AI\nWebsite + Telegram Bot (Same App)")
-        prompt = gr.Textbox(label="Script / Visual Prompt", value="Ghanaian entrepreneur walking in modern Accra market, confident")
-        script = gr.Textbox(label="Voice-over Script (keep 1 sentence for speed)", value="Welcome to ProtonXona, we turn your script into video instantly.")
-        btn = gr.Button("Generate Video", variant="primary")
-        video = gr.Video(label="Result")
-        status = gr.Textbox(label="Status")
-        btn.click(generate_web, inputs=[prompt, script], outputs=[video, status])
-    demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 10000)), share=False)
+        gr.Markdown("# ProtonXona — Script to Video AI Generator\n### Website + Telegram Bot")
+        
+        with gr.Row():
+            with gr.Column():
+                prompt = gr.Textbox(
+                    label="Visual Prompt",
+                    value="Ghanaian entrepreneur walking in modern Accra market, confident",
+                )
+                script = gr.Textbox(
+                    label="Voice-over Script (Keep short for speed)",
+                    value="Welcome to ProtonXona, we turn your script into video instantly.",
+                )
+                btn = gr.Button("🎬 Generate Video", variant="primary")
+            
+            with gr.Column():
+                video = gr.Video(label="Generated Result")
+                status = gr.Textbox(label="Status")
 
-# ---------- TELEGRAM PART ----------
+        btn.click(generate_web, inputs=[prompt, script], outputs=[video, status])
+
+    port = int(os.environ.get("PORT", 10000))
+    demo.launch(server_name="0.0.0.0", server_port=port, share=False)
+
+# ---------------- TELEGRAM BOT INTERFACE ----------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("ProtonXona Bot 🎬\nSend me like this:\nVisual | Voice\nExample:\nGhana lady in market | Welcome to my business\n\nOr just send one line and I use it for both.")
+    await update.message.reply_text(
+        "🎬 **ProtonXona AI Video Generator Bot**\n\n"
+        "Send your request using this format:\n"
+        "`Visual Prompt | Voiceover Text`\n\n"
+        "**Example:**\n"
+        "`Ghana lady in market | Welcome to my business`\n\n"
+        "Or just send a single line of text to use it for both!",
+        parse_mode="Markdown",
+    )
 
 async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+    text = update.message.text or ""
+    
     if "|" in text:
         prompt, voice = text.split("|", 1)
     else:
         prompt, voice = text, text
-    await update.message.reply_text(f"🎬 Generating: {prompt.strip()}\n~30 sec...")
+
+    prompt = prompt.strip()
+    voice = voice.strip()
+
+    status_msg = await update.message.reply_text(f"🎬 Generating video for:\n`{prompt}`\n\nPlease wait ~30 seconds...", parse_mode="Markdown")
+
     try:
-        out = make_video_file(prompt.strip(), voice.strip())
-        await update.message.reply_video(video=open(out, 'rb'), caption="✅ Your ProtonXona Video — Website + Telegram")
+        out_path = make_video_file(prompt, voice)
+        with open(out_path, "rb") as video_file:
+            await update.message.reply_video(
+                video=video_file,
+                caption="✅ **Your ProtonXona AI Video is Ready!**",
+                parse_mode="Markdown",
+            )
+        await status_msg.delete()
     except Exception as e:
-        await update.message.reply_text(f"Error: {str(e)[:800]}")
+        await update.message.reply_text(f"❌ Error generating video: {str(e)[:800]}")
 
 def launch_telegram():
-    if not TELE_TOKEN or not HF_TOKEN:
-        print("No TELEGRAM_TOKEN or HF_TOKEN, skipping bot")
+    if not TELE_TOKEN:
+        print("⚠️ TELEGRAM_TOKEN missing. Skipping Telegram bot initialization...")
         return
+    
     app = Application.builder().token(TELE_TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
-    print("Telegram Bot Running...")
-    app.run_polling()
+    
+    print("🚀 Telegram Bot listening for messages...")
+    app.run_polling(drop_pending_updates=True)
 
-# ---------- RUN BOTH ----------
-if name == "main":
-    # Gradio in background thread
-    threading.Thread(target=launch_gradio, daemon=True).start()
-    # Telegram in main
+# ---------------- MAIN EXECUTION ----------------
+if __name__ == "__main__":
+    # Launch Gradio interface in a background daemon thread
+    gradio_thread = threading.Thread(target=launch_gradio, daemon=True)
+    gradio_thread.start()
+
+    # Launch Telegram Bot on the main thread
     launch_telegram()

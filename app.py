@@ -3,7 +3,6 @@ import tempfile
 import threading
 import gradio as gr
 from gtts import gTTS
-from moviepy.editor import ImageClip, AudioFileClip
 from huggingface_hub import InferenceClient
 from telegram import Update
 from telegram.ext import (
@@ -13,6 +12,12 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+
+# Robust MoviePy import compatibility (handles both MoviePy v1 and v2)
+try:
+    from moviepy.editor import ImageClip, AudioFileClip
+except ModuleNotFoundError:
+    from moviepy import ImageClip, AudioFileClip
 
 # ---------------- ENVIRONMENT & TOKENS ----------------
 HF_TOKEN = os.getenv("HF_TOKEN", "")
@@ -44,13 +49,19 @@ def make_video_file(prompt: str, script_text: str) -> str:
     img.save(tmp_img)
 
     # 3. Create Video Clip from Image + Audio
-    clip = ImageClip(tmp_img).set_duration(audio.duration)
+    clip = ImageClip(tmp_img)
     
-    # Compatibility support for MoviePy v1 and v2
-    if hasattr(clip, "set_audio"):
-        clip = clip.set_audio(audio)
+    # Duration setting compatibility (MoviePy v1 vs v2)
+    if hasattr(clip, "with_duration"):
+        clip = clip.with_duration(audio.duration)
     else:
+        clip = clip.set_duration(audio.duration)
+
+    # Audio attachment compatibility (MoviePy v1 vs v2)
+    if hasattr(clip, "with_audio"):
         clip = clip.with_audio(audio)
+    else:
+        clip = clip.set_audio(audio)
 
     out_video = tempfile.mktemp(suffix=".mp4")
     clip.write_videofile(
@@ -62,7 +73,7 @@ def make_video_file(prompt: str, script_text: str) -> str:
         logger=None,
     )
     
-    # Close clips to release file handles
+    # Clean up file handlers
     clip.close()
     audio.close()
 
@@ -126,7 +137,10 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = prompt.strip()
     voice = voice.strip()
 
-    status_msg = await update.message.reply_text(f"🎬 Generating video for:\n`{prompt}`\n\nPlease wait ~30 seconds...", parse_mode="Markdown")
+    status_msg = await update.message.reply_text(
+        f"🎬 Generating video for:\n`{prompt}`\n\nPlease wait ~30 seconds...", 
+        parse_mode="Markdown"
+    )
 
     try:
         out_path = make_video_file(prompt, voice)

@@ -1,6 +1,6 @@
-gradio>=4.0.0
-gTTS>=2.5.0
-moviepy>=1.0.3
-huggingface-hub>=0.20.0
-python-telegram-bot>=20.0
-pillow>=10.0.0
+gradio==4.44.0
+gTTS==2.5.3
+moviepy==1.0.3
+huggingface-hub==0.24.6
+python-telegram-bot==21.5
+pillow==10.4.0
